@@ -25,6 +25,7 @@ public class Splash extends AppCompatActivity {
 
         if (isServiceOk()) {
             launchMainActivity();
+            Splash.this.finish();
         } else {
             findViewById(R.id.pb_splash).setVisibility(View.GONE);
         }

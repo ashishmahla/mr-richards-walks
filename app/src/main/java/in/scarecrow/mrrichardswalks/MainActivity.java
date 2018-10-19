@@ -5,6 +5,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
+import android.location.Address;
+import android.location.Geocoder;
 import android.location.Location;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
@@ -12,10 +14,21 @@ import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
+import android.support.v7.widget.CardView;
 import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.inputmethod.EditorInfo;
+import android.widget.AdapterView;
+import android.widget.AutoCompleteTextView;
+import android.widget.TextView;
 import android.widget.Toast;
 
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.PendingResult;
 import com.google.android.gms.common.api.ResolvableApiException;
+import com.google.android.gms.common.api.ResultCallback;
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
@@ -24,18 +37,30 @@ import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.LocationSettingsResponse;
 import com.google.android.gms.location.SettingsClient;
+import com.google.android.gms.location.places.AutocompletePrediction;
+import com.google.android.gms.location.places.Place;
+import com.google.android.gms.location.places.PlaceBuffer;
+import com.google.android.gms.location.places.Places;
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
 import com.google.android.gms.maps.model.LatLng;
+import com.google.android.gms.maps.model.LatLngBounds;
+import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.tasks.OnFailureListener;
 import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.gms.tasks.Task;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Objects;
+
+import in.scarecrow.mrrichardswalks.libs.PlaceAutoCompleteAdapter;
 import in.scarecrow.mrrichardswalks.utils.Statics;
 
-public class MainActivity extends AppCompatActivity implements OnMapReadyCallback {
+public class MainActivity extends AppCompatActivity implements OnMapReadyCallback, GoogleApiClient.OnConnectionFailedListener {
 
     private static final String TAG = "MainActivity";
     private static final int RC_LOCATION_PERMS = 2389;
@@ -43,13 +68,51 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
     private static final String KEY_REQUESTING_LOCATION_UPDATES = "req-loc-update-key";
     private static final int RC_LOCATION_RESOLUTION = 9382;
     private static final LatLng DEFAULT_MAP_LOCATION = new LatLng(12, 77);
+    private static final LatLngBounds LAT_LNG_BOUNDS = new LatLngBounds(
+            new LatLng(12.8739, 77.756),
+            new LatLng(13.0939, 77.45244)
+    );
     LocationRequest mLocationRequest;
+    AutoCompleteTextView actv_addrSearch;
+    CardView cv_locate_me;
     private GoogleMap googleMap;
     private FusedLocationProviderClient fusedLpClient;
     private LocationCallback mLocationCallback;
     private boolean mRequestingLocationUpdates = true;
     private Location mCurrentLocation;
     private boolean presentLocationTracedOnce = false;
+    private PlaceAutoCompleteAdapter autoCompleteAdapter;
+    private GoogleApiClient mGoogleApiClient;
+    private ResultCallback<PlaceBuffer> mUpdatePlaceDetailsCallback = new ResultCallback<PlaceBuffer>() {
+        @Override
+        public void onResult(@NonNull PlaceBuffer places) {
+            if (!places.getStatus().isSuccess()) {
+                Log.d(TAG, "onResult: Place query did not complete successfully: " + places.getStatus().toString());
+                places.release();
+                return;
+            }
+            final Place place = places.get(0);
+
+            dropPin(new LatLng(Objects.requireNonNull(place.getViewport()).getCenter().latitude,
+                    place.getViewport().getCenter().longitude), CAMERA_ZOOM_LEVEL, place.getName().toString());
+
+            places.release();
+        }
+    };
+
+    private AdapterView.OnItemClickListener mAutocompleteClickListener = new AdapterView.OnItemClickListener() {
+        @Override
+        public void onItemClick(AdapterView<?> adapterView, View view, int i, long l) {
+            hideSoftKeyboard();
+
+            final AutocompletePrediction item = autoCompleteAdapter.getItem(i);
+            final String placeId = item.getPlaceId();
+
+            PendingResult<PlaceBuffer> placeResult = Places.GeoDataApi
+                    .getPlaceById(mGoogleApiClient, placeId);
+            placeResult.setResultCallback(mUpdatePlaceDetailsCallback);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,9 +153,85 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         };
 
         initMap();
+        initViews();
+        initAutoComplete();
 
         // finally check required permissions and init map on permissions found
         checkLocationPermissions();
+    }
+
+    private void initAutoComplete() {
+        mGoogleApiClient = new GoogleApiClient
+                .Builder(MainActivity.this)
+                .addApi(Places.GEO_DATA_API)
+                .addApi(Places.PLACE_DETECTION_API)
+                .enableAutoManage(MainActivity.this, MainActivity.this)
+                .build();
+
+        autoCompleteAdapter = new PlaceAutoCompleteAdapter(MainActivity.this, mGoogleApiClient, LAT_LNG_BOUNDS, null);
+        actv_addrSearch.setAdapter(autoCompleteAdapter);
+        actv_addrSearch.setOnItemClickListener(mAutocompleteClickListener);
+    }
+
+    private void initViews() {
+        actv_addrSearch = findViewById(R.id.actv_address);
+        actv_addrSearch.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override
+            public boolean onEditorAction(TextView textView, int actionId, KeyEvent keyEvent) {
+                if (actionId == EditorInfo.IME_ACTION_SEARCH
+                        || actionId == EditorInfo.IME_ACTION_DONE
+                        || keyEvent.getAction() == KeyEvent.ACTION_DOWN
+                        || keyEvent.getAction() == KeyEvent.KEYCODE_ENTER) {
+                    hideSoftKeyboard();
+                    locateAddr();
+                }
+                return false;
+            }
+        });
+        hideSoftKeyboard();
+
+        cv_locate_me = findViewById(R.id.cv_locate_me);
+        cv_locate_me.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                moveToCurrentLocation();
+            }
+        });
+    }
+
+    private void locateAddr() {
+        String addr = actv_addrSearch.getText().toString();
+        if (addr.isEmpty()) return;
+
+        Geocoder geocoder = new Geocoder(MainActivity.this);
+        List<Address> addrList = new ArrayList<>();
+
+        try {
+            addrList = geocoder.getFromLocationName(addr, 1);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+        if (addrList.size() > 0) {
+            Address address = addrList.get(0);
+            dropPin(new LatLng(address.getLatitude(), address.getLongitude()), CAMERA_ZOOM_LEVEL, address.getAddressLine(0));
+        } else {
+            Statics.peekSnackbar(MainActivity.this, "No Address found for: " + addr);
+        }
+    }
+
+    private void hideSoftKeyboard() {
+        // TODO: 19-10-2018
+        // MainActivity.this.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+    }
+
+    @SuppressWarnings("SameParameterValue")
+    private void dropPin(LatLng latLng, float zoom, String title) {
+        moveCamera(latLng, zoom);
+        MarkerOptions markerOptions = new MarkerOptions();
+        markerOptions.position(latLng)
+                .title(title);
+        googleMap.addMarker(markerOptions);
     }
 
     private void initFusedLpClient() {
@@ -138,10 +277,11 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                 && ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             googleMap.setMyLocationEnabled(true);
+            googleMap.getUiSettings().setMyLocationButtonEnabled(false);
         }
     }
 
-    protected void checkLocationSettings() {
+    private void checkLocationSettings() {
 
         LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder()
                 .addLocationRequest(mLocationRequest);
@@ -315,5 +455,10 @@ public class MainActivity extends AppCompatActivity implements OnMapReadyCallbac
         }
 
         // todo Update UI to match restored state
+    }
+
+    @Override
+    public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+        // TODO: 19-10-2018
     }
 }

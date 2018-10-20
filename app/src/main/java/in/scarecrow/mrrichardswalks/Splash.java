@@ -3,6 +3,7 @@ package in.scarecrow.mrrichardswalks;
 import android.app.Dialog;
 import android.content.Intent;
 import android.os.Bundle;
+import android.os.Handler;
 import android.support.annotation.Nullable;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
@@ -25,14 +26,20 @@ public class Splash extends AppCompatActivity {
 
         if (isServiceOk()) {
             launchMainActivity();
-            Splash.this.finish();
         } else {
             findViewById(R.id.pb_splash).setVisibility(View.GONE);
         }
     }
 
     private void launchMainActivity() {
-        startActivity(new Intent(Splash.this, MainActivity.class));
+        Handler handler = new Handler();
+        Runnable r = new Runnable() {
+            public void run() {
+                startActivity(new Intent(Splash.this, MainActivity.class));
+                Splash.this.finish();
+            }
+        };
+        handler.postDelayed(r, 1000);
     }
 
     public boolean isServiceOk() {
